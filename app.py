@@ -1,6 +1,7 @@
 import hashlib
 import os
 import sqlite3
+import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -137,9 +138,11 @@ async def upload(request: Request, file: UploadFile = File(...)):
     if not user:
         return RedirectResponse("/login", status_code=303)
     original = file.filename or "upload.bin"
-    stored = original
+    suffix = Path(original).suffix  # keep extension only, e.g. ".txt"
+    if len(suffix) > 10 or "/" in suffix or "\\" in suffix:
+        suffix = ""
+    stored = f"{secrets.token_hex(16)}{suffix}"
     dest = UPLOADS / stored
-    dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(await file.read())
     with db() as conn:
         conn.execute(
@@ -150,11 +153,19 @@ async def upload(request: Request, file: UploadFile = File(...)):
 
 
 @app.get("/download")
-def download(name: str):
-    path = os.path.join(str(UPLOADS), name)
-    if not os.path.isfile(path):
-        return HTMLResponse("That file is not in the drop.", status_code=404)
-    return FileResponse(path, filename=os.path.basename(name))
+def download(request: Request, name: str):
+    user = current_user(request)
+    if not user:
+        return HTMLResponse("Sign in to download.", status_code=401)
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM files WHERE user_id = ? AND stored_name = ?",
+            (user["id"], name),
+        ).fetchone()
+    if not row:
+        return HTMLResponse("That file is not in your drop.", status_code=404)
+    path = UPLOADS / row["stored_name"]
+    return FileResponse(path, filename=row["original_name"])
 
 
 @app.get("/health")
